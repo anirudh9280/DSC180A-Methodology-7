@@ -45,6 +45,30 @@ UNVERIFIED_COLS = {"cnt_2d_bfr"}
 # What feature_columns() and the tests actually enforce.
 FORBIDDEN = LEAKAGE_COLS | TIME_INDEX_COLS | UNVERIFIED_COLS
 
+# --- Every other raw column, classified -----------------------------------
+# tests/test_contract.py fails if data/raw/bike_daily.csv has a column in none
+# of FORBIDDEN, these sets, or DATE_COL: a new column must be argued for here
+# before it can drift into feature_columns() as a numeric passenger.
+DATE_COL = "dteday"
+# Same-day weather measurements, used as features unchanged.
+RAW_FEATURES = {"temp", "atemp", "hum", "windspeed"}
+# Text flags that src/features.py encodes (is_holiday, is_workday,
+# weather_severity); the raw text never reaches the model.
+ENCODED_COLS = {"holiday", "workday", "weather"}
+# Text restatements of dteday. Calendar features are derived from dteday
+# itself, so these are deliberately unused.
+REDUNDANT_CALENDAR_COLS = {"season", "mnth", "weekday"}
+
+# Columns build_features() derives. The model's inputs still come from
+# feature_columns() (derived from FORBIDDEN); this set is the independent
+# oracle tests/test_leakage.py compares it to, so a leaked column under a
+# new name fails a test. Adding a feature means adding its name here.
+DERIVED_FEATURES = {
+    "dayofweek", "is_weekend", "is_holiday", "is_workday",
+    "month_sin", "month_cos", "weather_severity",
+    "cnt_lag_1", "cnt_lag_7", "cnt_roll_7", "cnt_roll_28",
+}
+
 # Temporal split: train on 2011, validate on H1 2012, test on H2 2012.
 TRAIN_END = "2011-12-31"
 VALID_END = "2012-06-30"

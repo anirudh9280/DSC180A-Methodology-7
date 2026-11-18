@@ -4,10 +4,11 @@ test_no_forbidden_features is the single most valuable test in this repo:
 casual + registered == cnt exactly, so any model handed those columns
 scores R^2 = 1.0 and looks brilliant while having learned nothing.
 """
+import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import FORBIDDEN, TARGET
+from src.config import DERIVED_FEATURES, FORBIDDEN, RAW_FEATURES, TARGET
 from src.features import build_features, feature_columns
 from src.ingest import load_raw
 
@@ -29,6 +30,32 @@ def test_no_forbidden_features(feats):
     exactly the fault the Step 7 hook demonstrates."""
     cols = set(feature_columns(feats))
     assert not (cols & FORBIDDEN), f"forbidden columns in feature set: {cols & FORBIDDEN}"
+
+
+def test_feature_set_is_exactly_the_declared_set(feats):
+    """test_no_forbidden_features checks names against FORBIDDEN, so a leaked
+    column under a new name (`out["reg"] = out.registered`, or `casual`
+    renamed in the CSV) sails through it. This compares what the model
+    actually receives against the independent list in src/config.py."""
+    actual = set(feature_columns(feats))
+    declared = RAW_FEATURES | DERIVED_FEATURES
+    assert actual == declared, (
+        f"undeclared features {sorted(actual - declared)}; "
+        f"declared but missing {sorted(declared - actual)}"
+    )
+
+
+def test_no_feature_set_reconstructs_the_target(feats):
+    """Value-based, not name-based: if any linear combination of the model's
+    inputs reproduces cnt exactly (casual + registered under any names), the
+    least-squares residual collapses to ~0. Honest features leave residuals
+    of hundreds of rides."""
+    cols = feature_columns(feats)
+    X = np.column_stack([feats[cols].to_numpy(dtype=float), np.ones(len(feats))])
+    y = feats[TARGET].to_numpy(dtype=float)
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    max_resid = float(np.abs(X @ coef - y).max())
+    assert max_resid > 1.0, f"features reconstruct {TARGET} exactly (max residual {max_resid:.2e})"
 
 
 def test_lags_are_true_calendar_lags(feats):

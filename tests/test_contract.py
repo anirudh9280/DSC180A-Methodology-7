@@ -3,7 +3,16 @@ import pandas as pd
 import pytest
 from sklearn.metrics import r2_score
 
-from src.config import LAG_WARMUP, TARGET
+from src.config import (
+    DATE_COL,
+    ENCODED_COLS,
+    FORBIDDEN,
+    LAG_WARMUP,
+    RAW,
+    RAW_FEATURES,
+    REDUNDANT_CALENDAR_COLS,
+    TARGET,
+)
 from src.features import build_features, feature_columns, reindex_to_calendar
 from src.ingest import load_raw
 from src.train import MODELS, temporal_split
@@ -42,6 +51,21 @@ def test_only_expected_rows_are_dropped(raw, feats):
     allowed_loss = LAG_WARMUP + LAG_WARMUP * missing_days
     lost = len(raw) - len(feats)
     assert lost <= allowed_loss, f"lost {lost} rows; expected at most {allowed_loss}"
+
+
+def test_every_raw_column_is_classified():
+    """Every column in the raw file must be forbidden (with a reason), a
+    declared raw feature, an encoded source, a redundant calendar label, or
+    the date. Reads the CSV header directly, not via load_raw() or
+    feature_columns(): a new numeric column would pass straight into
+    feature_columns(), so counting that as 'classified' could never fail."""
+    header = set(pd.read_csv(RAW, nrows=0).columns)
+    classified = FORBIDDEN | RAW_FEATURES | ENCODED_COLS | REDUNDANT_CALENDAR_COLS | {DATE_COL}
+    unclassified = header - classified
+    assert not unclassified, (
+        f"unclassified raw columns {sorted(unclassified)}: add each to a set in "
+        "src/config.py with the reason, before it can reach the model"
+    )
 
 
 def test_beats_the_mean_baseline(feats):
