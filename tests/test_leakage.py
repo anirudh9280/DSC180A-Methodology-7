@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from src.config import DERIVED_FEATURES, FORBIDDEN, RAW_FEATURES, TARGET
-from src.features import build_features, feature_columns
+from src.features import build_features, encode_weather, feature_columns
 from src.ingest import load_raw
 
 
@@ -121,3 +121,16 @@ def test_no_missing_values(feats):
 def test_dates_are_sorted_and_unique(feats):
     assert feats.dteday.is_monotonic_increasing
     assert feats.dteday.is_unique
+
+
+def test_encode_weather_rejects_unseen_labels():
+    """The raw data only holds GOOD/MISTY/BAD, so no data-driven test can see
+    this guard. Without it `.map()` turns a new label into NaN and the later
+    `dropna()` deletes those days silently -- feed it one directly."""
+    s = pd.Series(["GOOD", "STORMY", "BAD"])
+    try:
+        out = encode_weather(s)
+    except ValueError as e:
+        assert "STORMY" in str(e)
+    else:
+        pytest.fail(f"unseen label 'STORMY' accepted silently; got {out.tolist()}")
