@@ -205,3 +205,95 @@ Two tests catch it. `test_no_forbidden_features` is the starter's
 name-based gate. `test_feature_set_is_exactly_the_declared_set` is new; it
 would also catch the same leak under a name that is *not* in `FORBIDDEN`.
 
+## Fault (b): `.shift(1)` deleted from `cnt_roll_7`
+
+**Change** (seeded via Edit):
+
+```diff
+diff --git a/src/features.py b/src/features.py
+index e3c1859..a4e2572 100644
+--- a/src/features.py
++++ b/src/features.py
+@@ -73,7 +73,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
+     # If you add a longer lag, raise LAG_WARMUP in src/config.py.
+     out["cnt_lag_1"] = out[TARGET].shift(1)
+     out["cnt_lag_7"] = out[TARGET].shift(WEEK)
+-    out["cnt_roll_7"] = out[TARGET].shift(1).rolling(WEEK).mean()
++    out["cnt_roll_7"] = out[TARGET].rolling(WEEK).mean()
+     # No min_periods: a window touching the absent 2011-03-10 stays NaN and
+     # is dropped, rather than becoming a 27-day mean labelled as 28.
+     out["cnt_roll_28"] = out[TARGET].shift(1).rolling(LAG_WARMUP).mean()
+```
+
+**Hook stderr** (`PostToolUse:Edit`, exit 2):
+
+```text
+[PostToolUse:Edit exit_code=2]
+Leakage tests failed after editing ~/Desktop/DSC_Capstone/DSC180A-Methodology-7/src/features.py:
+[672 rows x 29 columns]
+
+    def test_rolling_mean_excludes_today(feats):
+        """cnt_roll_7 must be the mean of the 7 calendar days *before* today."""
+        by_date = feats.set_index("dteday")[TARGET]
+        date = feats.dteday.iloc[200]
+        window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
+        if all(d in by_date.index for d in window):
+            expected = sum(by_date[d] for d in window) / 7
+>           assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
+E           assert np.float64(4605.285714285715) == 4724.428571428572 ± 0.00472443
+E             
+E             comparison failed
+E             Obtained: 4605.285714285715
+E             Expected: 4724.428571428572 ± 0.00472443
+
+tests/test_leakage.py:84: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_rolling_mean_excludes_today - assert np.fl...
+1 failed, 10 passed in 0.35s
+```
+
+**`make test`:**
+
+```text
+python -m pytest tests/ -q
+...........F.......                                                      [100%]
+=================================== FAILURES ===================================
+_______________________ test_rolling_mean_excludes_today _______________________
+
+feats =         dteday  instant  season  ...  cnt_lag_7   cnt_roll_7  cnt_roll_28
+0   2011-01-31     31.0  WINTER  ...     141....428571  4071.321429
+671 2012-12-31    731.0  WINTER  ...      920.0  1789.857143  3969.428571
+
+[672 rows x 29 columns]
+
+    def test_rolling_mean_excludes_today(feats):
+        """cnt_roll_7 must be the mean of the 7 calendar days *before* today."""
+        by_date = feats.set_index("dteday")[TARGET]
+        date = feats.dteday.iloc[200]
+        window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
+        if all(d in by_date.index for d in window):
+            expected = sum(by_date[d] for d in window) / 7
+>           assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
+E           assert np.float64(4605.285714285715) == 4724.428571428572 ± 0.00472443
+E             
+E             comparison failed
+E             Obtained: 4605.285714285715
+E             Expected: 4724.428571428572 ± 0.00472443
+
+tests/test_leakage.py:84: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_rolling_mean_excludes_today - assert np.fl...
+1 failed, 18 passed in 1.33s
+make: *** [test] Error 1
+```
+
+**Turns to fix: 6.** The tool calls were the same as for (a): `git diff &&
+make test`, one Edit restoring `.shift(1)`, then `make test` (19 passed).
+The hook exited 0 on the fixing Edit.
+
+The test only catches this because 2011-09-17 (`feats.iloc[200]` after the 28-day warm-up) has a
+complete 7-day window. The starter's `if all(d in by_date.index ...)` guard
+means the test would *pass vacuously* if row 200 ever landed within a week
+after a gap. The new `cnt_roll_28` tests assert that their window is
+complete instead of skipping, for that reason.
+
