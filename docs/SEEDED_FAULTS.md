@@ -1,0 +1,207 @@
+# Seeded faults
+
+Exercise 2, plus the failing run that Exercise 1 asks to be recorded here.
+
+**How these were produced.** Every block below is pasted from a real run;
+the only edit is that my home directory is shortened to `~`. Each fault
+was seeded by a headless Claude Code session (`claude -p`, Claude Opus 5.5)
+started in the repo root and told to apply one exact Edit and then stop.
+Seeding through the Edit tool, not by hand, is what makes the project's
+`PostToolUse` hook (`.claude/hooks/check_leakage.sh`) fire. Its stderr is
+taken from the session's hook events (`--include-hook-events`). The red
+output is `make test` run straight after the seed. The fix is a second,
+fresh session that is *not told what was broken*. Its prompt is only
+"`make test` is failing or something in src/ is wrong. Find the cause and
+fix it in src/. Do not edit tests/ or data/." **Turns** is Claude Code's
+`num_turns` for that fix session.
+
+Caveat on the turn counts: the fault is the only uncommitted change, so
+`git diff` points straight at it. These counts are a lower bound on what a
+fault buried in a larger diff would cost.
+
+## Exercise 1: the `cnt_roll_28` test, failing before the feature existed
+
+Commit `3c60cd5` holds the test alone. `make test` at that commit:
+
+```text
+python -m pytest tests/ -q
+.........F.....                                                          [100%]
+=================================== FAILURES ===================================
+________________ test_roll_28_is_mean_of_28_prior_calendar_days ________________
+
+feats =         dteday  instant  season  ...  cnt_lag_1 cnt_lag_7   cnt_roll_7
+0   2011-01-10     10.0  WINTER  ...      822.0...    1787.0  1530.142857
+713 2012-12-31    731.0  WINTER  ...     1796.0     920.0  1531.428571
+
+[714 rows x 28 columns]
+
+    def test_roll_28_is_mean_of_28_prior_calendar_days(feats):
+        """cnt_roll_28 on 2011-06-15 must equal the mean of raw cnt over the 28
+        calendar days strictly before it (2011-05-18 .. 2011-06-14). Expected is
+        computed from load_raw(), not from feats, so it cannot share a bug with
+        build_features. Unlike the roll_7 test there is no `if` guard: a gap in
+        the window fails loudly instead of passing vacuously."""
+        raw = load_raw().set_index("dteday")[TARGET]
+        date = pd.Timestamp("2011-06-15")
+        window = pd.date_range(date - pd.Timedelta(days=28), date - pd.Timedelta(days=1), freq="D")
+        assert len(window) == 28
+        assert window.isin(raw.index).all(), "window has a gap in the raw data; pick another date"
+        expected = raw[window].sum() / 28
+>       assert feats.set_index("dteday").cnt_roll_28[date] == pytest.approx(expected)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_leakage.py:72: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self =             instant  season      yr  ... cnt_lag_1 cnt_lag_7   cnt_roll_7
+dteday                               ...    ... 1787.0  1530.142857
+2012-12-31    731.0  WINTER  2012.0  ...    1796.0     920.0  1531.428571
+
+[714 rows x 27 columns]
+name = 'cnt_roll_28'
+
+    @final
+    def __getattr__(self, name: str):
+        """
+        After regular attribute access, try looking up the name
+        This allows simpler access to columns for interactive use.
+        """
+        # Note: obj.x will always call obj.__getattribute__('x') prior to
+        # calling obj.__getattr__('x').
+        if (
+            name not in self._internal_names_set
+            and name not in self._metadata
+            and name not in self._accessors
+            and self._info_axis._can_hold_identifiers_and_holds_name(name)
+        ):
+            return self[name]
+>       return object.__getattribute__(self, name)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'DataFrame' object has no attribute 'cnt_roll_28'. Did you mean: 'cnt_roll_7'?
+
+.venv/lib/python3.12/site-packages/pandas/core/generic.py:6194: AttributeError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_roll_28_is_mean_of_28_prior_calendar_days
+1 failed, 14 passed in 1.35s
+make: *** [test] Error 1
+```
+
+It fails for the right reason: the column does not exist yet. The window
+checks inside the test (28 dates, all present in the raw data) passed
+before the lookup, so the test is not failing on its own set-up.
+
+## Fault (a): a forbidden column added to `feature_columns`
+
+**Change** (seeded via Edit):
+
+```diff
+diff --git a/src/features.py b/src/features.py
+index e3c1859..6aa4b84 100644
+--- a/src/features.py
++++ b/src/features.py
+@@ -84,7 +84,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
+ def feature_columns(df: pd.DataFrame) -> list[str]:
+     """Numeric columns that are safe to feed the model."""
+     numeric = df.select_dtypes(include="number").columns
+-    return [c for c in numeric if c not in FORBIDDEN]
++    return [c for c in numeric if c not in FORBIDDEN] + ["casual"]
+ 
+ 
+ if __name__ == "__main__":
+```
+
+**Hook stderr** (`PostToolUse:Edit`, exit 2, so it went back to the agent
+as a blocking message):
+
+```text
+[PostToolUse:Edit exit_code=2]
+Leakage tests failed after editing ~/Desktop/DSC_Capstone/DSC180A-Methodology-7/src/features.py:
+        renamed in the CSV) sails through it. This compares what the model
+        actually receives against the independent list in src/config.py."""
+        actual = set(feature_columns(feats))
+        declared = RAW_FEATURES | DERIVED_FEATURES
+>       assert actual == declared, (
+            f"undeclared features {sorted(actual - declared)}; "
+            f"declared but missing {sorted(declared - actual)}"
+        )
+E       AssertionError: undeclared features ['casual']; declared but missing []
+E       assert {'atemp', 'ca..._roll_7', ...} == {'atemp', 'cn...yofweek', ...}
+E         
+E         Extra items in the left set:
+E         'casual'
+E         Use -v to get more diff
+
+tests/test_leakage.py:42: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_no_forbidden_features - AssertionError: fo...
+FAILED tests/test_leakage.py::test_feature_set_is_exactly_the_declared_set - ...
+2 failed, 9 passed in 0.59s
+```
+
+**`make test`:**
+
+```text
+python -m pytest tests/ -q
+......FF...........                                                      [100%]
+=================================== FAILURES ===================================
+__________________________ test_no_forbidden_features __________________________
+
+feats =         dteday  instant  season  ...  cnt_lag_7   cnt_roll_7  cnt_roll_28
+0   2011-01-31     31.0  WINTER  ...     141....142857  4071.321429
+671 2012-12-31    731.0  WINTER  ...      920.0  1531.428571  3969.428571
+
+[672 rows x 29 columns]
+
+    def test_no_forbidden_features(feats):
+        """Guards the gate, not the data: feature_columns() excludes FORBIDDEN by
+        construction, so this cannot discover a *new* leaky column. What it
+        catches is someone editing feature_columns() or FORBIDDEN -- which is
+        exactly the fault the Step 7 hook demonstrates."""
+        cols = set(feature_columns(feats))
+>       assert not (cols & FORBIDDEN), f"forbidden columns in feature set: {cols & FORBIDDEN}"
+E       AssertionError: forbidden columns in feature set: {'casual'}
+E       assert not ({'atemp', 'casual', 'cnt_lag_1', 'cnt_lag_7', 'cnt_roll_28', 'cnt_roll_7', ...} & {'casual', 'cnt', 'cnt_2d_bfr', 'days_since_2011', 'instant', 'registered', ...})
+
+tests/test_leakage.py:32: AssertionError
+_________________ test_feature_set_is_exactly_the_declared_set _________________
+
+feats =         dteday  instant  season  ...  cnt_lag_7   cnt_roll_7  cnt_roll_28
+0   2011-01-31     31.0  WINTER  ...     141....142857  4071.321429
+671 2012-12-31    731.0  WINTER  ...      920.0  1531.428571  3969.428571
+
+[672 rows x 29 columns]
+
+    def test_feature_set_is_exactly_the_declared_set(feats):
+        """test_no_forbidden_features checks names against FORBIDDEN, so a leaked
+        column under a new name (`out["reg"] = out.registered`, or `casual`
+        renamed in the CSV) sails through it. This compares what the model
+        actually receives against the independent list in src/config.py."""
+        actual = set(feature_columns(feats))
+        declared = RAW_FEATURES | DERIVED_FEATURES
+>       assert actual == declared, (
+            f"undeclared features {sorted(actual - declared)}; "
+            f"declared but missing {sorted(declared - actual)}"
+        )
+E       AssertionError: undeclared features ['casual']; declared but missing []
+E       assert {'atemp', 'ca..._roll_7', ...} == {'atemp', 'cn...yofweek', ...}
+E         
+E         Extra items in the left set:
+E         'casual'
+E         Use -v to get more diff
+
+tests/test_leakage.py:42: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_no_forbidden_features - AssertionError: fo...
+FAILED tests/test_leakage.py::test_feature_set_is_exactly_the_declared_set - ...
+2 failed, 17 passed in 1.51s
+make: *** [test] Error 1
+```
+
+**Turns to fix: 6.** The fix session's tool calls were `git diff && make
+test`, a single Edit removing `+ ["casual"]`, then `make test` (19
+passed). The hook re-ran on that Edit and exited 0.
+
+Two tests catch it. `test_no_forbidden_features` is the starter's
+name-based gate. `test_feature_set_is_exactly_the_declared_set` is new; it
+would also catch the same leak under a name that is *not* in `FORBIDDEN`.
+
