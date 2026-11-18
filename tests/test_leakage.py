@@ -57,6 +57,21 @@ def test_rolling_mean_excludes_today(feats):
         assert feats.set_index("dteday").cnt_roll_7[date] == pytest.approx(expected)
 
 
+def test_roll_28_is_mean_of_28_prior_calendar_days(feats):
+    """cnt_roll_28 on 2011-06-15 must equal the mean of raw cnt over the 28
+    calendar days strictly before it (2011-05-18 .. 2011-06-14). Expected is
+    computed from load_raw(), not from feats, so it cannot share a bug with
+    build_features. Unlike the roll_7 test there is no `if` guard: a gap in
+    the window fails loudly instead of passing vacuously."""
+    raw = load_raw().set_index("dteday")[TARGET]
+    date = pd.Timestamp("2011-06-15")
+    window = pd.date_range(date - pd.Timedelta(days=28), date - pd.Timedelta(days=1), freq="D")
+    assert len(window) == 28
+    assert window.isin(raw.index).all(), "window has a gap in the raw data; pick another date"
+    expected = raw[window].sum() / 28
+    assert feats.set_index("dteday").cnt_roll_28[date] == pytest.approx(expected)
+
+
 def test_no_missing_values(feats):
     assert feats[feature_columns(feats)].isna().sum().sum() == 0
 
