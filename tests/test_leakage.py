@@ -72,6 +72,21 @@ def test_roll_28_is_mean_of_28_prior_calendar_days(feats):
     assert feats.set_index("dteday").cnt_roll_28[date] == pytest.approx(expected)
 
 
+def test_roll_28_drops_windows_containing_the_gap(feats):
+    """2011-03-10 is absent from the raw data, so every date whose 28-day
+    window contains it (2011-03-11 .. 2011-04-07) has an incomplete history
+    and must be dropped -- not given a 27-day mean by a min_periods setting."""
+    raw = load_raw()
+    gap = pd.Timestamp("2011-03-10")
+    assert gap not in set(raw.dteday), "gap day is present; this test is moot"
+    affected = pd.date_range(gap + pd.Timedelta(days=1), gap + pd.Timedelta(days=28), freq="D")
+    assert affected[-1] == pd.Timestamp("2011-04-07")
+    leaked = affected[affected.isin(feats.dteday)]
+    assert leaked.empty, f"rows kept despite incomplete 28-day window: {list(leaked.date)}"
+    # The first date after the affected run must survive, or the test is too broad.
+    assert pd.Timestamp("2011-04-08") in set(feats.dteday)
+
+
 def test_no_missing_values(feats):
     assert feats[feature_columns(feats)].isna().sum().sum() == 0
 
