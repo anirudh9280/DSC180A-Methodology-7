@@ -297,3 +297,156 @@ means the test would *pass vacuously* if row 200 ever landed within a week
 after a gap. The new `cnt_roll_28` tests assert that their window is
 complete instead of skipping, for that reason.
 
+## Fault (c): the weather encoder's `raise` removed
+
+### First seeding: nothing noticed
+
+**Change** (seeded via Edit):
+
+```diff
+diff --git a/src/features.py b/src/features.py
+index e3c1859..e82a39a 100644
+--- a/src/features.py
++++ b/src/features.py
+@@ -26,8 +26,6 @@ def encode_weather(series: pd.Series) -> pd.Series:
+     """
+     known = series.dropna()
+     unknown = set(known.unique()) - set(WEATHER_ORDER)
+-    if unknown:
+-        raise ValueError(f"unmapped weather labels: {sorted(unknown)}")
+     return series.map(WEATHER_ORDER).astype(float)
+ 
+ 
+```
+
+**Hook output**: the hook ran and exited 0 with empty stderr, so the agent
+was told nothing:
+
+```text
+[PostToolUse:Edit exit_code=0]
+```
+
+**`make test`:** green.
+
+```text
+python -m pytest tests/ -q
+...................                                                      [100%]
+19 passed in 1.25s
+```
+
+This is the finding of the exercise. The raw file contains only `GOOD`,
+`MISTY` and `BAD`, so every data-driven test reaches the encoder with
+labels it knows, and the guard is never exercised. The fault is real
+anyway. The day the source adds a label (`SNOW`, or a lower-case `bad`),
+`.map()` returns NaN for it and `dropna()` deletes those days silently.
+The starter's row-loss bound would catch that only if the loss went over
+its 56-row allowance, and only on data that has not arrived yet.
+
+**Fix, part 1: a test that can see it (7 turns).** A headless session was
+told the guard was missing and asked for one test in
+`tests/test_leakage.py` (the file the hook runs). The test had to fail on
+the faulty `src/`, with no `src/` edits allowed. It wrote
+`test_encode_weather_rejects_unseen_labels`, which feeds
+`["GOOD", "STORMY", "BAD"]` straight to `encode_weather`. `make test`
+against the still-faulty `src/`:
+
+```text
+python -m pytest tests/ -q
+................F...                                                     [100%]
+=================================== FAILURES ===================================
+__________________ test_encode_weather_rejects_unseen_labels ___________________
+
+    def test_encode_weather_rejects_unseen_labels():
+        """The raw data only holds GOOD/MISTY/BAD, so no data-driven test can see
+        this guard. Without it `.map()` turns a new label into NaN and the later
+        `dropna()` deletes those days silently -- feed it one directly."""
+        s = pd.Series(["GOOD", "STORMY", "BAD"])
+        try:
+            out = encode_weather(s)
+        except ValueError as e:
+            assert "STORMY" in str(e)
+        else:
+>           pytest.fail(f"unseen label 'STORMY' accepted silently; got {out.tolist()}")
+E           Failed: unseen label 'STORMY' accepted silently; got [0.0, nan, 2.0]
+
+tests/test_leakage.py:136: Failed
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_encode_weather_rejects_unseen_labels - Fai...
+1 failed, 19 passed in 1.34s
+make: *** [test] Error 1
+```
+
+**Fix, part 2: restore the guard (2 turns, same session resumed).** The
+agent used `git restore src/features.py` from Bash, not an Edit, so the
+hook did not fire on the fix. That is harmless here, but it is the same
+blind spot as the fourth fault below: anything done through Bash is
+invisible to an `Edit|Write` matcher. The test was committed (`Fault (c)
+was invisible: ...`) before the re-seed below.
+
+### Second seeding: same fault, stronger suite
+
+**Change:** identical to the diff above.
+
+**Hook stderr** (`PostToolUse:Edit`, exit 2):
+
+```text
+[PostToolUse:Edit exit_code=2]
+Leakage tests failed after editing ~/Desktop/DSC_Capstone/DSC180A-Methodology-7/src/features.py:
+=================================== FAILURES ===================================
+__________________ test_encode_weather_rejects_unseen_labels ___________________
+
+    def test_encode_weather_rejects_unseen_labels():
+        """The raw data only holds GOOD/MISTY/BAD, so no data-driven test can see
+        this guard. Without it `.map()` turns a new label into NaN and the later
+        `dropna()` deletes those days silently -- feed it one directly."""
+        s = pd.Series(["GOOD", "STORMY", "BAD"])
+        try:
+            out = encode_weather(s)
+        except ValueError as e:
+            assert "STORMY" in str(e)
+        else:
+>           pytest.fail(f"unseen label 'STORMY' accepted silently; got {out.tolist()}")
+E           Failed: unseen label 'STORMY' accepted silently; got [0.0, nan, 2.0]
+
+tests/test_leakage.py:136: Failed
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_encode_weather_rejects_unseen_labels - Fai...
+1 failed, 11 passed in 0.35s
+```
+
+**`make test`:**
+
+```text
+python -m pytest tests/ -q
+................F...                                                     [100%]
+=================================== FAILURES ===================================
+__________________ test_encode_weather_rejects_unseen_labels ___________________
+
+    def test_encode_weather_rejects_unseen_labels():
+        """The raw data only holds GOOD/MISTY/BAD, so no data-driven test can see
+        this guard. Without it `.map()` turns a new label into NaN and the later
+        `dropna()` deletes those days silently -- feed it one directly."""
+        s = pd.Series(["GOOD", "STORMY", "BAD"])
+        try:
+            out = encode_weather(s)
+        except ValueError as e:
+            assert "STORMY" in str(e)
+        else:
+>           pytest.fail(f"unseen label 'STORMY' accepted silently; got {out.tolist()}")
+E           Failed: unseen label 'STORMY' accepted silently; got [0.0, nan, 2.0]
+
+tests/test_leakage.py:136: Failed
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_encode_weather_rejects_unseen_labels - Fai...
+1 failed, 19 passed in 1.31s
+make: *** [test] Error 1
+```
+
+**Turns to fix: 6.** The fix session first tried `git checkout --
+src/features.py`, which the permission check blocked because it discards
+uncommitted work. It then restored the two lines with an Edit; the hook
+re-ran and exited 0, and `make test` showed 20 passed.
+
+**Total for (c): 7 + 2 turns to make the fault detectable and fix it; 6
+turns to fix it once it was detectable.**
+
