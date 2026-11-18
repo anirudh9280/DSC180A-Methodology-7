@@ -9,12 +9,13 @@ from src.config import (
     FORBIDDEN,
     LAG_WARMUP,
     RAW,
+    RAW_SHA256,
     RAW_FEATURES,
     REDUNDANT_CALENDAR_COLS,
     TARGET,
 )
 from src.features import build_features, feature_columns, reindex_to_calendar
-from src.ingest import load_raw
+from src.ingest import load_raw, raw_sha256
 from src.train import MODELS, temporal_split
 
 
@@ -65,6 +66,15 @@ def test_every_raw_column_is_classified():
     assert not unclassified, (
         f"unclassified raw columns {sorted(unclassified)}: add each to a set in "
         "src/config.py with the reason, before it can reach the model"
+    )
+
+
+def test_raw_file_is_the_pinned_copy():
+    """data/raw/bike_daily.csv is immutable. A value edit that preserves
+    casual + registered == cnt passes every other test and still moves every
+    metric; only the bytes can tell."""
+    assert raw_sha256() == RAW_SHA256, (
+        "data/raw/bike_daily.csv changed; restore it with git checkout"
     )
 
 

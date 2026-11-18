@@ -20,6 +20,12 @@ DATA_URL = (
     "interpretable-ml-book/master/data/bike.csv"
 )
 
+# SHA-256 of the checked-in raw file. `make data` and tests/test_contract.py
+# refuse anything else: the Write/Edit deny rules and the PostToolUse hook do
+# not see a write made from Bash (a script, a redirect), and a value edit that
+# keeps casual + registered == cnt passes every other test.
+RAW_SHA256 = "a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc"
+
 TARGET = "cnt"
 
 # --- Three reasons a column is kept out of the feature set --------------
